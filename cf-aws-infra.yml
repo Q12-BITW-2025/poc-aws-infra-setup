@@ -1,0 +1,263 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  q12-PoC Minimal private-node Amazon EKS cluster ready for PoC
+
+Parameters:
+  ClusterName:
+    Type: String
+    Default: q12-PoC-cluster
+  NodeInstanceType:
+    Type: String
+    Default: t3.small
+
+Mappings:
+  SubnetConfig:
+    PublicA:  { Cidr: 10.0.0.0/19 }
+    PublicB:  { Cidr: 10.0.32.0/19 }
+    PrivateA: { Cidr: 10.0.64.0/19 }
+    PrivateB: { Cidr: 10.0.96.0/19 }
+
+Resources:
+  ### VPC & Networking ###
+  Q12PoCVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: q12-PoC-vpc
+
+  Q12PoCIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: q12-PoC-igw
+
+  Q12PoCIGWAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Q12PoCVPC
+      InternetGatewayId: !Ref Q12PoCIGW
+
+  Q12PoCPubSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      VpcId: !Ref Q12PoCVPC
+      CidrBlock: !FindInMap [SubnetConfig, PublicA, Cidr]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: q12-PoC-public-a
+        - Key: kubernetes.io/role/elb
+          Value: '1'
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: shared
+
+  Q12PoCPubSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs '']
+      VpcId: !Ref Q12PoCVPC
+      CidrBlock: !FindInMap [SubnetConfig, PublicB, Cidr]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: q12-PoC-public-b
+        - Key: kubernetes.io/role/elb
+          Value: '1'
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: shared
+
+  Q12PoCPrivSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      VpcId: !Ref Q12PoCVPC
+      CidrBlock: !FindInMap [SubnetConfig, PrivateA, Cidr]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: q12-PoC-private-a
+        - Key: kubernetes.io/role/internal-elb
+          Value: '1'
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: shared
+
+  Q12PoCPrivSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs '']
+      VpcId: !Ref Q12PoCVPC
+      CidrBlock: !FindInMap [SubnetConfig, PrivateB, Cidr]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: q12-PoC-private-b
+        - Key: kubernetes.io/role/internal-elb
+          Value: '1'
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: shared
+
+  Q12PoCPubRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Q12PoCVPC
+      Tags:
+        - Key: Name
+          Value: q12-PoC-public-rt
+
+  Q12PoCPubDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: Q12PoCIGWAttach
+    Properties:
+      RouteTableId: !Ref Q12PoCPubRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref Q12PoCIGW
+
+  Q12PoCPubSubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref Q12PoCPubRouteTable
+      SubnetId: !Ref Q12PoCPubSubnetA
+
+  Q12PoCPubSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref Q12PoCPubRouteTable
+      SubnetId: !Ref Q12PoCPubSubnetB
+
+  Q12PoCNatEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: q12-PoC-nat-eip
+
+  Q12PoCNatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt Q12PoCNatEIP.AllocationId
+      SubnetId: !Ref Q12PoCPubSubnetA
+      Tags:
+        - Key: Name
+          Value: q12-PoC-nat
+
+  Q12PoCPrivRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Q12PoCVPC
+      Tags:
+        - Key: Name
+          Value: q12-PoC-private-rt
+
+  Q12PoCPrivDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref Q12PoCPrivRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref Q12PoCNatGateway
+
+  Q12PoCPrivSubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref Q12PoCPrivRouteTable
+      SubnetId: !Ref Q12PoCPrivSubnetA
+
+  Q12PoCPrivSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref Q12PoCPrivRouteTable
+      SubnetId: !Ref Q12PoCPrivSubnetB
+
+  ### IAM Roles ###
+  Q12PoCClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+        - arn:aws:iam::aws:policy/AmazonEKSVPCResourceController
+      Tags:
+        - Key: Name
+          Value: q12-PoC-cluster-role
+
+  Q12PoCNodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: q12-PoC-node-role
+
+  ### EKS Control Plane ###
+  Q12PoCCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Ref ClusterName
+      Version: '1.30'
+      RoleArn: !GetAtt Q12PoCClusterRole.Arn
+      ResourcesVpcConfig:
+        SubnetIds:
+          - !Ref Q12PoCPrivSubnetA
+          - !Ref Q12PoCPrivSubnetB
+          - !Ref Q12PoCPubSubnetA
+          - !Ref Q12PoCPubSubnetB
+        EndpointPublicAccess: true
+        EndpointPrivateAccess: true
+      Tags:
+        - Key: Name
+          Value: q12-PoC-cluster
+
+  Q12PoCNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      NodegroupName: q12-PoC-ng
+      ClusterName: !Ref Q12PoCCluster
+      NodeRole: !GetAtt Q12PoCNodeRole.Arn
+      Subnets:
+        - !Ref Q12PoCPrivSubnetA
+        - !Ref Q12PoCPrivSubnetB
+      ScalingConfig:
+        MinSize: 3
+        DesiredSize: 3
+        MaxSize: 3
+      AmiType: AL2_x86_64
+      InstanceTypes: [!Ref NodeInstanceType]
+      Tags:
+        Name: q12-PoC-nodegroup
+
+Outputs:
+  ClusterName:
+    Value: !Ref Q12PoCCluster
+
+  ClusterEndpoint:
+    Value: !GetAtt Q12PoCCluster.Endpoint
+
+  UpdateKubeconfigCommand:
+    Value: !Sub |
+      aws eks update-kubeconfig --region ${AWS::Region} --name ${Q12PoCCluster}
+
+  NodeGroupName:
+    Value: q12-PoC-ng
